@@ -109,11 +109,6 @@ local function setup(chatFrame)
 	chatFrame:SetMaxLines(HISTORY_LINES)
 	chatFrame:SetScript("OnMouseWheel", scrollOneMessage)
 
-	-- Drag across text to copy it. Blizzard's selection needs the frame to
-	-- take mouse clicks, which it does not by default.
-	chatFrame:SetTextCopyable(true)
-	chatFrame:EnableMouse(true)
-
 	-- Text is laid out upward from the bottom and clipped at the top. Trim
 	-- the clip region to a whole number of text rows, so the top row is never
 	-- cut through. Blizzard redraws after every resize and font change.
