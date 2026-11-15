@@ -9,11 +9,11 @@ hidden:Hide()
 local HISTORY_LINES = 1000 -- Blizzard keeps 128 per window
 local WHISPER_TAB_WIDTH = 130 -- Blizzard: 90, which cuts most names short
 
+local RIGHT_CORNERS = { "TOPRIGHT", "BOTTOMRIGHT" }
 local EDIT_BOX_ART = { "Left", "Mid", "Right", "FocusLeft", "FocusMid", "FocusRight" }
 local TAB_ART = {
 	"Left", "Middle", "Right", "ActiveLeft", "ActiveMiddle", "ActiveRight",
 	"HighlightLeft", "HighlightMiddle", "HighlightRight",
-	"glow", -- unread flash; an unread tab's label already stays fully bright
 }
 
 -- How the sender's name leads the line, per chat event. Events not listed
@@ -157,6 +157,17 @@ local function setup(chatFrame)
 		tab[key]:SetTexture(nil)
 	end
 
+	-- Unread marker. Blizzard's is a wide flare of tab art; make it a thin
+	-- line under the label. Blizzard still shows it, pulses it, and tints it
+	-- to the tab's chat colour.
+	local glow = tab.glow
+	glow:SetTexture("Interface\\Buttons\\WHITE8x8")
+	glow:SetBlendMode("BLEND")
+	glow:ClearAllPoints()
+	glow:SetPoint("TOPLEFT", tab.Text, "BOTTOMLEFT", 0, -2)
+	glow:SetPoint("TOPRIGHT", tab.Text, "BOTTOMRIGHT", 0, -2)
+	glow:SetHeight(2)
+
 	-- Whisper tabs carry an icon and an off-centre label, and Blizzard holds
 	-- them to a fixed width: it will not measure the name, which can be a
 	-- secret value. Drop the icon, line the label up with the other tabs,
@@ -190,20 +201,19 @@ local function setup(chatFrame)
 	chatFrame:SetTextCopyable(true)
 	chatFrame:EnableMouse(true)
 
+	-- Blizzard's background fill overhangs the text by 2px on the left and by
+	-- 15 on the right, where the scrollbar was. Match the left.
+	local background = chatFrame.Background
+	for _, corner in ipairs(RIGHT_CORNERS) do
+		local point, relativeTo, relativePoint, _, y = background:GetPointByName(corner)
+		background:SetPoint(point, relativeTo, relativePoint, 2, y)
+	end
+
 	-- Blizzard redraws after every new line, scroll, resize and font change.
+	local container = chatFrame.FontStringContainer
+	local ruler = chatFrame:CreateFontString() -- never shown; measures a row
 	local trimmed
 	chatFrame:AddOnDisplayRefreshedCallback(function()
-		-- Text is laid out upward from the bottom and clipped at the top.
-		-- Trim the clip region to a whole number of text rows, so the top row
-		-- is never cut through.
-		local _, fontHeight = chatFrame:GetFont()
-		local spacing = chatFrame:GetSpacing()
-		local trim = (chatFrame:GetHeight() + spacing) % (fontHeight + spacing)
-		if trim ~= trimmed then
-			trimmed = trim
-			chatFrame.FontStringContainer:SetPoint("TOPLEFT", 0, -trim)
-		end
-
 		-- Lines are created as the window needs them. Watch each new one, and
 		-- show its short form now, since this redraw has already filled it.
 		for _, line in ipairs(chatFrame.visibleLines) do
@@ -213,6 +223,37 @@ local function setup(chatFrame)
 				hooksecurefunc(line, "SetText", showShortLine)
 				showShortLine(line)
 			end
+		end
+
+		-- Messages stack upward from the bottom and are cut off at the
+		-- window's top edge, usually part-way through a row. Find the top of
+		-- the last message that fits whole. This is measured, because rows
+		-- are not all one height: an icon makes its row taller. In instances
+		-- a line's position can be a secret value; the walk stops there.
+		local top, fits = chatFrame:GetTop(), chatFrame:GetBottom()
+		if not top then
+			return
+		end
+		for _, line in ipairs(chatFrame.visibleLines) do
+			local lineTop = line:GetTop()
+			if not canaccessvalue(lineTop) or not lineTop or lineTop > top + 0.5 then
+				break
+			end
+			fits = lineTop
+		end
+
+		-- Above that, keep the whole rows of the next message and trim the
+		-- clip region to hide the rest. The half pixel absorbs rounding. The
+		-- eighth of a row hides the tails of the letters in the row cut away,
+		-- which hang that far below it.
+		ruler:SetFontObject(chatFrame:GetFontObject())
+		local row = ruler:GetLineHeight()
+		local trim = math.max((top - fits + 0.5) % row - 0.5, 0) + row / 8
+		if trim ~= trimmed then
+			trimmed = trim
+			container:ClearAllPoints()
+			container:SetPoint("TOPLEFT", 0, -trim)
+			container:SetPoint("BOTTOMRIGHT")
 		end
 	end)
 
@@ -247,10 +288,11 @@ setupNewFrames()
 -- Whisper and pop-out windows are created on demand.
 hooksecurefunc("FCF_OpenTemporaryWindow", setupNewFrames)
 
--- Tabs after the first sit in a scrolling strip, 3px higher than the first.
--- The strip centres them on a child frame that is shorter than a tab. Make
--- it a tab's height and they line up.
-GeneralDockManager.scrollFrame.child:SetHeight(ChatFrame1Tab:GetHeight())
+-- Tabs after the first sit in a scrolling strip, 1px higher than the first.
+-- The strip is 31 tall with its bottom on the first tab's, and holds them 1px
+-- below the centre of a child frame hung from its top. A tab is 32 tall, so
+-- its centre is 16 up: 31 - 28 / 2 - 1.
+GeneralDockManager.scrollFrame.child:SetHeight(28)
 
 -- Edit Mode pads the main chat frame's selection box for the button column
 -- and scrollbar, and clamps the frame to the screen by it. With those gone,
