@@ -23,7 +23,7 @@ for _, chatType in ipairs({
 	NAME_FORMAT["CHAT_MSG_" .. chatType] = "%s: "
 end
 
--- Rewrites a player chat line as it enters a window's history:
+-- Builds the short form of a player chat line from its history entry:
 --   [2. Trade - City] [Name]: hi   ->  [2] Name: hi
 --   [Guild] [Name]: hi             ->  Name: hi
 --   [Name] says: hi                ->  Name: hi
@@ -32,7 +32,7 @@ end
 -- secret values: they may be joined, formatted and passed to the functions
 -- used here, but not compared, measured or searched. Keeping to that makes
 -- the result the same everywhere.
-local function rewrite(_, entry)
+local function shortLine(entry)
 	local extra = entry.extraData -- info id, access id, type id, event, event args
 	local nameFormat = extra and NAME_FORMAT[extra[4]]
 	if not nameFormat then
@@ -61,9 +61,33 @@ local function rewrite(_, entry)
 	end
 	local timestamp = ChatFrameUtil.GetTimestampFormat()
 	if timestamp then
-		line = TimeUtil.BetterDate(timestamp, time()) .. line
+		-- The entry records when it arrived, as seconds of uptime.
+		line = TimeUtil.BetterDate(timestamp, time() - (GetTime() - entry.timestamp)) .. line
 	end
-	entry.message = line
+	return line
+end
+
+-- Blizzard's history is left exactly as Blizzard wrote it. The short form is
+-- swapped in only on screen, each time Blizzard puts an entry's text on one
+-- of the window's lines. Anything this addon stored in the history would
+-- mark Blizzard's own code as tampered with when it reads it back, and its
+-- drag-to-copy would then be refused the clipboard.
+local shortLines = setmetatable({}, { __mode = "k" }) -- entry -> short form
+local hooked = {} -- lines already watched
+local setText -- a line's own SetText, taken before the line is hooked
+local function showShortLine(line)
+	local entry = line.messageInfo
+	if not entry then
+		return
+	end
+	local text = shortLines[entry]
+	if not text then
+		text = shortLine(entry)
+		shortLines[entry] = text
+	end
+	if text then
+		setText(line, text)
+	end
 end
 
 -- Blizzard scrolls three messages per wheel click.
@@ -109,11 +133,16 @@ local function setup(chatFrame)
 	chatFrame:SetMaxLines(HISTORY_LINES)
 	chatFrame:SetScript("OnMouseWheel", scrollOneMessage)
 
-	-- Text is laid out upward from the bottom and clipped at the top. Trim
-	-- the clip region to a whole number of text rows, so the top row is never
-	-- cut through. Blizzard redraws after every resize and font change.
+	-- Blizzard's own drag-to-copy, which chat windows leave switched off.
+	-- It needs the window to take mouse clicks; see the hover hooks below.
+	chatFrame:SetTextCopyable(true)
+
+	-- Blizzard redraws after every new line, scroll, resize and font change.
 	local trimmed
 	chatFrame:AddOnDisplayRefreshedCallback(function()
+		-- Text is laid out upward from the bottom and clipped at the top.
+		-- Trim the clip region to a whole number of text rows, so the top row
+		-- is never cut through.
 		local _, fontHeight = chatFrame:GetFont()
 		local spacing = chatFrame:GetSpacing()
 		local trim = (chatFrame:GetHeight() + spacing) % (fontHeight + spacing)
@@ -121,9 +150,18 @@ local function setup(chatFrame)
 			trimmed = trim
 			chatFrame.FontStringContainer:SetPoint("TOPLEFT", 0, -trim)
 		end
-	end)
 
-	hooksecurefunc(chatFrame.historyBuffer, "PushFront", rewrite)
+		-- Lines are created as the window needs them. Watch each new one, and
+		-- show its short form now, since this redraw has already filled it.
+		for _, line in ipairs(chatFrame.visibleLines) do
+			if not hooked[line] then
+				hooked[line] = true
+				setText = setText or line.SetText
+				hooksecurefunc(line, "SetText", showShortLine)
+				showShortLine(line)
+			end
+		end
+	end)
 end
 
 -- CHAT_FRAMES only grows, so each window is set up exactly once.
@@ -139,6 +177,19 @@ QuickJoinToastButton:SetParent(hidden)
 setupNewFrames()
 -- Whisper and pop-out windows are created on demand.
 hooksecurefunc("FCF_OpenTemporaryWindow", setupNewFrames)
+
+-- A chat window lets clicks through to the world, which drag-to-copy cannot
+-- work with. Blizzard calls these when the mouse has rested on a window (its
+-- background fades in) and a moment after it has left, so the window takes
+-- clicks only in between. A drag that wanders off the window keeps it.
+hooksecurefunc("FCF_FadeInChatFrame", function(chatFrame)
+	chatFrame:EnableMouse(true)
+end)
+hooksecurefunc("FCF_FadeOutChatFrame", function(chatFrame)
+	if not chatFrame:IsSelectingText() then
+		chatFrame:EnableMouse(false)
+	end
+end)
 
 -- Edit Mode pads the main chat frame's selection box for the button column
 -- and scrollbar, and clamps the frame to the screen by it. With those gone,
