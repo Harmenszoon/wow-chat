@@ -61,30 +61,22 @@ local function shortLine(entry)
 	end
 	local timestamp = ChatFrameUtil.GetTimestampFormat()
 	if timestamp then
-		-- The entry records when it arrived, as seconds of uptime.
-		line = TimeUtil.BetterDate(timestamp, time() - (GetTime() - entry.timestamp)) .. line
+		line = TimeUtil.BetterDate(timestamp, time()) .. line
 	end
 	return line
 end
 
 -- Blizzard's history is left exactly as Blizzard wrote it. The short form is
--- swapped in only on screen, each time Blizzard puts an entry's text on one
--- of the window's lines. Anything this addon stored in the history would
--- mark Blizzard's own code as tampered with when it reads it back, and its
--- drag-to-copy would then be refused the clipboard.
+-- built once, when a line arrives, and kept here. It is swapped in only on
+-- screen, each time Blizzard puts an entry's text on one of the window's
+-- lines. Anything this addon stored in the history would mark Blizzard's own
+-- code as tampered with when it reads it back, and its drag-to-copy would
+-- then be refused the clipboard.
 local shortLines = setmetatable({}, { __mode = "k" }) -- entry -> short form
 local hooked = {} -- lines already watched
 local setText -- a line's own SetText, taken before the line is hooked
 local function showShortLine(line)
-	local entry = line.messageInfo
-	if not entry then
-		return
-	end
-	local text = shortLines[entry]
-	if not text then
-		text = shortLine(entry)
-		shortLines[entry] = text
-	end
+	local text = shortLines[line.messageInfo]
 	if text then
 		setText(line, text)
 	end
@@ -115,6 +107,11 @@ local function restoreUnmarked(chatFrame)
 		else
 			chatFrame:BackFillMessage(entry.message, entry.r, entry.g, entry.b)
 		end
+	end
+	-- The history now holds new entries in the same order. Carry each short
+	-- form over to the entry that replaced its own.
+	for i, entry in ipairs(entries) do
+		shortLines[buffer:GetEntryAtIndex(i)] = shortLines[entry]
 	end
 	chatFrame:SetScrollOffset(offset)
 end
@@ -189,13 +186,14 @@ local function setup(chatFrame)
 		end
 	end)
 
-	-- Note when an addon-written line arrives, and put the history right
-	-- just before a selection starts: a window's own mouse-down script runs
-	-- ahead of Blizzard's. Lines from before this addon loaded are unknown,
-	-- so the first click always does it.
+	-- As each line arrives, build its short form, and note whether an addon
+	-- wrote it. The history is put right just before a selection starts: a
+	-- window's own mouse-down script runs ahead of Blizzard's. Lines from
+	-- before this addon loaded are unknown, so the first click always does it.
 	local marked = true
 	hooksecurefunc(chatFrame.historyBuffer, "PushFront", function(_, entry)
 		marked = marked or not issecurevariable(entry, "message")
+		shortLines[entry] = shortLine(entry)
 	end)
 	chatFrame:HookScript("OnMouseDown", function()
 		if marked then
