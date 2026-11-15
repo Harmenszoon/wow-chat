@@ -134,8 +134,10 @@ local function setup(chatFrame)
 	chatFrame:SetScript("OnMouseWheel", scrollOneMessage)
 
 	-- Blizzard's own drag-to-copy, which chat windows leave switched off.
-	-- It needs the window to take mouse clicks; see the hover hooks below.
+	-- It needs the window to take mouse clicks, so clicks on the chat area
+	-- no longer pass through to the world.
 	chatFrame:SetTextCopyable(true)
+	chatFrame:EnableMouse(true)
 
 	-- Blizzard redraws after every new line, scroll, resize and font change.
 	local trimmed
@@ -177,19 +179,6 @@ QuickJoinToastButton:SetParent(hidden)
 setupNewFrames()
 -- Whisper and pop-out windows are created on demand.
 hooksecurefunc("FCF_OpenTemporaryWindow", setupNewFrames)
-
--- A chat window lets clicks through to the world, which drag-to-copy cannot
--- work with. Blizzard calls these when the mouse has rested on a window (its
--- background fades in) and a moment after it has left, so the window takes
--- clicks only in between. A drag that wanders off the window keeps it.
-hooksecurefunc("FCF_FadeInChatFrame", function(chatFrame)
-	chatFrame:EnableMouse(true)
-end)
-hooksecurefunc("FCF_FadeOutChatFrame", function(chatFrame)
-	if not chatFrame:IsSelectingText() then
-		chatFrame:EnableMouse(false)
-	end
-end)
 
 -- Edit Mode pads the main chat frame's selection box for the button column
 -- and scrollbar, and clamps the frame to the screen by it. With those gone,
