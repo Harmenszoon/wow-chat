@@ -13,6 +13,7 @@ local EDIT_BOX_ART = { "Left", "Mid", "Right", "FocusLeft", "FocusMid", "FocusRi
 local TAB_ART = {
 	"Left", "Middle", "Right", "ActiveLeft", "ActiveMiddle", "ActiveRight",
 	"HighlightLeft", "HighlightMiddle", "HighlightRight",
+	"glow", -- unread flash; an unread tab's label already stays fully bright
 }
 
 -- How the sender's name leads the line, per chat event. Events not listed
@@ -245,6 +246,11 @@ QuickJoinToastButton:SetParent(hidden)
 setupNewFrames()
 -- Whisper and pop-out windows are created on demand.
 hooksecurefunc("FCF_OpenTemporaryWindow", setupNewFrames)
+
+-- Tabs after the first sit in a scrolling strip, 3px higher than the first.
+-- The strip centres them on a child frame that is shorter than a tab. Make
+-- it a tab's height and they line up.
+GeneralDockManager.scrollFrame.child:SetHeight(ChatFrame1Tab:GetHeight())
 
 -- Edit Mode pads the main chat frame's selection box for the button column
 -- and scrollbar, and clamps the frame to the screen by it. With those gone,
