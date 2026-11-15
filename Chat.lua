@@ -95,6 +95,30 @@ local function scrollOneMessage(chatFrame, delta)
 	chatFrame:ScrollByAmount(delta)
 end
 
+-- A line an addon prints is stored marked as that addon's, and Blizzard's
+-- drag-to-copy is refused the clipboard while one is on screen. Of Blizzard's
+-- ways to store a line, only BackFillMessage leaves it unmarked (tested in
+-- game), and it adds at the oldest end. So the whole history is put back
+-- through it, newest line first.
+local function restoreUnmarked(chatFrame)
+	local buffer = chatFrame.historyBuffer
+	local offset = chatFrame:GetScrollOffset()
+	local entries = {}
+	for i = 1, chatFrame:GetNumMessages() do
+		entries[i] = buffer:GetEntryAtIndex(i) -- 1 is the newest
+	end
+	chatFrame:Clear()
+	for _, entry in ipairs(entries) do
+		local extra = entry.extraData
+		if extra then
+			chatFrame:BackFillMessage(entry.message, entry.r, entry.g, entry.b, unpack(extra, 1, extra.n))
+		else
+			chatFrame:BackFillMessage(entry.message, entry.r, entry.g, entry.b)
+		end
+	end
+	chatFrame:SetScrollOffset(offset)
+end
+
 local function setup(chatFrame)
 	local name = chatFrame:GetName()
 
@@ -162,6 +186,21 @@ local function setup(chatFrame)
 				hooksecurefunc(line, "SetText", showShortLine)
 				showShortLine(line)
 			end
+		end
+	end)
+
+	-- Note when an addon-written line arrives, and put the history right
+	-- just before a selection starts: a window's own mouse-down script runs
+	-- ahead of Blizzard's. Lines from before this addon loaded are unknown,
+	-- so the first click always does it.
+	local marked = true
+	hooksecurefunc(chatFrame.historyBuffer, "PushFront", function(_, entry)
+		marked = marked or not issecurevariable(entry, "message")
+	end)
+	chatFrame:HookScript("OnMouseDown", function()
+		if marked then
+			marked = false
+			restoreUnmarked(chatFrame)
 		end
 	end)
 end
