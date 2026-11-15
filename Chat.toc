@@ -1,0 +1,6 @@
+## Interface: 16001
+## Title: Chat
+## Notes: Small in-place enhancements to the default chat frames.
+## Version: 0.1.0
+
+Chat.lua
