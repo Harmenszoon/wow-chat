@@ -7,6 +7,7 @@ local hidden = CreateFrame("Frame", nil, UIParent)
 hidden:Hide()
 
 local HISTORY_LINES = 1000 -- Blizzard keeps 128 per window
+local WHISPER_TAB_WIDTH = 130 -- Blizzard: 90, which cuts most names short
 
 local EDIT_BOX_ART = { "Left", "Mid", "Right", "FocusLeft", "FocusMid", "FocusRight" }
 local TAB_ART = {
@@ -153,6 +154,23 @@ local function setup(chatFrame)
 	local tab = _G[name .. "Tab"]
 	for _, key in ipairs(TAB_ART) do
 		tab[key]:SetTexture(nil)
+	end
+
+	-- Whisper tabs carry an icon and an off-centre label, and Blizzard holds
+	-- them to a fixed width: it will not measure the name, which can be a
+	-- secret value. Drop the icon, line the label up with the other tabs,
+	-- and keep a fixed width, only wider.
+	if tab.conversationIcon then
+		tab.conversationIcon:Hide()
+		tab.Text:ClearAllPoints()
+		tab.Text:SetPoint("LEFT", 10, -5)
+		local setWidth = tab.SetWidth
+		local function widen()
+			setWidth(tab, WHISPER_TAB_WIDTH)
+			tab.Text:SetWidth(WHISPER_TAB_WIDTH - 20)
+		end
+		hooksecurefunc(tab, "SetWidth", widen)
+		widen()
 	end
 
 	-- Blizzard insets the typed line 15px from the edit box's left edge and
