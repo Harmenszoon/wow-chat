@@ -6,6 +6,11 @@
 local hidden = CreateFrame("Frame", nil, UIParent)
 hidden:Hide()
 
+-- Never shown. It measures a row of text, and lends its SetText to lines
+-- whose own has been hooked.
+local ruler = hidden:CreateFontString()
+local setText = ruler.SetText
+
 local HISTORY_LINES = 1000 -- Blizzard keeps 128 per window
 
 local RIGHT_CORNERS = { "TOPRIGHT", "BOTTOMRIGHT" }
@@ -33,22 +38,26 @@ end
 --   [Guild] [Name]: hi             ->  Name: hi
 --   [Name] says: hi                ->  Name: hi
 -- The line is built from the event's own arguments, never by editing
--- Blizzard's finished text. In dungeons, raids and PvP those arguments are
--- secret values: they may be joined, formatted and passed to the functions
--- used here, but not compared, measured or searched. Keeping to that makes
--- the result the same everywhere.
-local function shortLine(entry)
+-- Blizzard's finished text, and otherwise as Blizzard builds it. In dungeons,
+-- raids and PvP the text, the sender and the sender's GUID are secret values:
+-- they may be joined, formatted and passed to the functions used here, but
+-- not compared, measured or searched. Keeping to that makes the result the
+-- same everywhere.
+local function shortLine(chatFrame, entry)
 	local extra = entry.extraData -- info id, access id, type id, event, event args
-	local nameFormat = extra and NAME_FORMAT[extra[4]]
+	local event = extra and extra[4]
+	local nameFormat = NAME_FORMAT[event]
 	if not nameFormat then
 		return
 	end
 	local args = extra[5]
-	local text, sender, lineID = args[1], args[2], args[11]
+	local text, sender, language, lineID = args[1], args[2], args[3], args[11]
 	if C_ChatInfo.IsChatLineCensored(lineID) then
 		return
 	end
-	local group, target = ChatHistory_GetChatType(extra[2])
+	-- "CHAT_MSG_PARTY_LEADER" -> "PARTY". Blizzard's record of this, kept by
+	-- access id, is keyed by sender for whispers and so can itself be secret.
+	local group = ChatFrameUtil.GetChatCategory(event:sub(10))
 
 	local name = Ambiguate(sender, group == "GUILD" and "guild" or "none")
 	local _, class = GetPlayerInfoByGUID(args[12])
@@ -57,10 +66,24 @@ local function shortLine(entry)
 		name = color:WrapTextInColorCode(name)
 	end
 
+	text = C_StringUtil.RemoveContiguousSpaces(C_ChatInfo.ReplaceIconAndGroupExpressions(
+		text, args[17], not ChatFrameUtil.CanChatGroupPerformExpressionExpansion(group)), 4)
+	if args[14] then -- sent from the mobile app
+		text = ChatFrameUtil.GetMobileEmbeddedTexture(entry.r, entry.g, entry.b) .. text
+	end
+	-- A line in a language other than the reader's own is tagged with it.
+	local ownLanguage = chatFrame.defaultLanguage
+	if event == "CHAT_MSG_SAY" or event == "CHAT_MSG_YELL" then
+		ownLanguage = chatFrame.alternativeDefaultLanguage
+	end
+	if language ~= "" and language ~= ownLanguage then
+		text = "[" .. language .. "] " .. text
+	end
+
+	-- Blizzard's player link ends in a fourth field, the chat target, which
+	-- nothing reads.
 	local line = nameFormat:format(ChatFrameUtil.GetPFlag(args[6], args[7], args[8])
-		.. ("|Hplayer:%s:%s:%s:%s|h%s|h"):format(sender, lineID, group, target or "", name))
-		.. C_StringUtil.RemoveContiguousSpaces(C_ChatInfo.ReplaceIconAndGroupExpressions(
-			text, args[17], not ChatFrameUtil.CanChatGroupPerformExpressionExpansion(group)), 4)
+		.. ("|Hplayer:%s:%s:%s|h%s|h"):format(sender, lineID, group, name)) .. text
 	if group == "CHANNEL" then
 		line = ("|Hchannel:channel:%d|h[%d]|h "):format(args[8], args[8]) .. line
 	end
@@ -79,7 +102,6 @@ end
 -- then be refused the clipboard.
 local shortLines = setmetatable({}, { __mode = "k" }) -- entry -> short form
 local hooked = {} -- lines already watched
-local setText -- a line's own SetText, taken before the line is hooked
 local function showShortLine(line)
 	local text = shortLines[line.messageInfo]
 	if text then
@@ -185,7 +207,9 @@ local function setup(chatFrame)
 	chatFrame.editBox:SetPoint("RIGHT", chatFrame, "RIGHT", 13, 0)
 
 	chatFrame:SetMaxLines(HISTORY_LINES)
-	chatFrame:SetScript("OnMouseWheel", scrollOneMessage)
+	if chatFrame:GetScript("OnMouseWheel") then -- absent if wheel scrolling is off
+		chatFrame:SetScript("OnMouseWheel", scrollOneMessage)
+	end
 
 	-- Blizzard's own drag-to-copy, which chat windows leave switched off.
 	-- It needs the window to take mouse clicks, so clicks on the chat area
@@ -203,7 +227,6 @@ local function setup(chatFrame)
 
 	-- Blizzard redraws after every new line, scroll, resize and font change.
 	local container = chatFrame.FontStringContainer
-	local ruler = chatFrame:CreateFontString() -- never shown; measures a row
 	local trimmed
 	chatFrame:AddOnDisplayRefreshedCallback(function()
 		-- Lines are created as the window needs them. Watch each new one, and
@@ -211,7 +234,6 @@ local function setup(chatFrame)
 		for _, line in ipairs(chatFrame.visibleLines) do
 			if not hooked[line] then
 				hooked[line] = true
-				setText = setText or line.SetText
 				hooksecurefunc(line, "SetText", showShortLine)
 				showShortLine(line)
 			end
@@ -250,16 +272,17 @@ local function setup(chatFrame)
 	end)
 
 	-- As each line arrives, build its short form, and note whether an addon
-	-- wrote it. The history is put right just before a selection starts: a
-	-- window's own mouse-down script runs ahead of Blizzard's. Lines from
-	-- before this addon loaded are unknown, so the first click always does it.
+	-- wrote it. The history is put right just before a selection starts, on
+	-- the left button: a window's own mouse-down script runs ahead of
+	-- Blizzard's. Lines from before this addon loaded are unknown, so the
+	-- first click always does it.
 	local marked = true
 	hooksecurefunc(chatFrame.historyBuffer, "PushFront", function(_, entry)
 		marked = marked or not issecurevariable(entry, "message")
-		shortLines[entry] = shortLine(entry)
+		shortLines[entry] = shortLine(chatFrame, entry)
 	end)
-	chatFrame:HookScript("OnMouseDown", function()
-		if marked then
+	chatFrame:HookScript("OnMouseDown", function(_, button)
+		if marked and button == "LeftButton" then
 			marked = false
 			restoreUnmarked(chatFrame)
 		end
