@@ -9,6 +9,10 @@ hidden:Hide()
 local HISTORY_LINES = 1000 -- Blizzard keeps 128 per window
 
 local EDIT_BOX_ART = { "Left", "Mid", "Right", "FocusLeft", "FocusMid", "FocusRight" }
+local TAB_ART = {
+	"Left", "Middle", "Right", "ActiveLeft", "ActiveMiddle", "ActiveRight",
+	"HighlightLeft", "HighlightMiddle", "HighlightRight",
+}
 
 -- How the sender's name leads the line, per chat event. Events not listed
 -- keep Blizzard's own line.
@@ -142,6 +146,13 @@ local function setup(chatFrame)
 	-- Edit box border. Blizzard toggles the focus half, so clear the art.
 	for _, suffix in ipairs(EDIT_BOX_ART) do
 		_G[name .. "EditBox" .. suffix]:SetTexture(nil)
+	end
+
+	-- Tab art, leaving the label. Blizzard toggles the selected-tab part, so
+	-- clear it rather than hide it.
+	local tab = _G[name .. "Tab"]
+	for _, key in ipairs(TAB_ART) do
+		tab[key]:SetTexture(nil)
 	end
 
 	-- Blizzard insets the typed line 15px from the edit box's left edge and
