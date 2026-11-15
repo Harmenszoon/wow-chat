@@ -7,7 +7,6 @@ local hidden = CreateFrame("Frame", nil, UIParent)
 hidden:Hide()
 
 local HISTORY_LINES = 1000 -- Blizzard keeps 128 per window
-local WHISPER_TAB_WIDTH = 130 -- Blizzard: 90, which cuts most names short
 
 local RIGHT_CORNERS = { "TOPRIGHT", "BOTTOMRIGHT" }
 local EDIT_BOX_ART = { "Left", "Mid", "Right", "FocusLeft", "FocusMid", "FocusRight" }
@@ -157,32 +156,25 @@ local function setup(chatFrame)
 		tab[key]:SetTexture(nil)
 	end
 
-	-- Unread marker. Blizzard's is a wide flare of tab art; make it a thin
-	-- line under the label. Blizzard still shows it, pulses it, and tints it
-	-- to the tab's chat colour.
-	local glow = tab.glow
-	glow:SetTexture("Interface\\Buttons\\WHITE8x8")
-	glow:SetBlendMode("BLEND")
-	glow:ClearAllPoints()
-	glow:SetPoint("TOPLEFT", tab.Text, "BOTTOMLEFT", 0, -2)
-	glow:SetPoint("TOPRIGHT", tab.Text, "BOTTOMRIGHT", 0, -2)
-	glow:SetHeight(2)
+	-- Unread glow, which Blizzard shows, pulses and tints to the tab's chat
+	-- colour. It is drawn 16 high along the tab's foot, where it runs up into
+	-- the label, though only the lower ten rows of its image are lit. Draw
+	-- just those, in the gap under the label.
+	tab.glow:SetTexCoord(0, 1, 6 / 16, 1)
+	tab.glow:SetHeight(6)
 
-	-- Whisper tabs carry an icon and an off-centre label, and Blizzard holds
-	-- them to a fixed width: it will not measure the name, which can be a
-	-- secret value. Drop the icon, line the label up with the other tabs,
-	-- and keep a fixed width, only wider.
+	-- Every tab after the first is one cell of a row of equal cells, its
+	-- label centred, and Blizzard sizes the cells: it never fits a tab to a
+	-- whisper name, which it may not measure. Whisper tabs differ only by an
+	-- icon and a label pushed left to make room for it. Drop the icon and
+	-- centre the label across the cell, whatever width the cell is given. A
+	-- name too long for it ends in an ellipsis.
 	if tab.conversationIcon then
 		tab.conversationIcon:Hide()
 		tab.Text:ClearAllPoints()
-		tab.Text:SetPoint("LEFT", 10, -5)
-		local setWidth = tab.SetWidth
-		local function widen()
-			setWidth(tab, WHISPER_TAB_WIDTH)
-			tab.Text:SetWidth(WHISPER_TAB_WIDTH - 20)
-		end
-		hooksecurefunc(tab, "SetWidth", widen)
-		widen()
+		tab.Text:SetPoint("LEFT", 5, -5)
+		tab.Text:SetPoint("RIGHT", -5, -5)
+		tab.Text:SetJustifyH("CENTER")
 	end
 
 	-- Blizzard insets the typed line 15px from the edit box's left edge and
