@@ -13,7 +13,7 @@ local setText = ruler.SetText
 
 local HISTORY_LINES = 1000 -- Blizzard keeps 128 per window
 
-local RIGHT_CORNERS = { "TOPRIGHT", "BOTTOMRIGHT" }
+local CORNERS = { "TOPLEFT", "TOPRIGHT", "BOTTOMLEFT", "BOTTOMRIGHT" }
 local EDIT_BOX_ART = { "Left", "Mid", "Right", "FocusLeft", "FocusMid", "FocusRight" }
 local TAB_ART = {
 	"Left", "Middle", "Right", "ActiveLeft", "ActiveMiddle", "ActiveRight",
@@ -24,11 +24,14 @@ local TAB_ART = {
 -- keep Blizzard's own line.
 local NAME_FORMAT = {
 	CHAT_MSG_WHISPER_INFORM = CHAT_WHISPER_INFORM_GET, -- "To %s: "
+	CHAT_MSG_BN_WHISPER_INFORM = CHAT_BN_WHISPER_INFORM_GET, -- "To %s: "
+	CHAT_MSG_AFK = CHAT_AFK_GET, -- "%s is Away: "
+	CHAT_MSG_DND = CHAT_DND_GET, -- "%s does not wish to be disturbed: "
 	CHAT_MSG_RAID_WARNING = CHAT_RAID_WARNING_GET, -- "[Raid Warning] %s: "
 }
 for _, chatType in ipairs({
-	"SAY", "YELL", "WHISPER", "CHANNEL", "GUILD", "OFFICER", "PARTY", "PARTY_LEADER",
-	"RAID", "RAID_LEADER", "INSTANCE_CHAT", "INSTANCE_CHAT_LEADER",
+	"SAY", "YELL", "WHISPER", "BN_WHISPER", "CHANNEL", "GUILD", "OFFICER", "PARTY",
+	"PARTY_LEADER", "RAID", "RAID_LEADER", "INSTANCE_CHAT", "INSTANCE_CHAT_LEADER",
 }) do
 	NAME_FORMAT["CHAT_MSG_" .. chatType] = "%s: "
 end
@@ -38,11 +41,11 @@ end
 --   [Guild] [Name]: hi             ->  Name: hi
 --   [Name] says: hi                ->  Name: hi
 -- The line is built from the event's own arguments, never by editing
--- Blizzard's finished text, and otherwise as Blizzard builds it. In dungeons,
--- raids and PvP the text, the sender and the sender's GUID are secret values:
--- they may be joined, formatted and passed to the functions used here, but
--- not compared, measured or searched. Keeping to that makes the result the
--- same everywhere.
+-- Blizzard's finished text, and otherwise as Blizzard builds it. During boss
+-- fights, keystone runs and PvP matches the text, the sender and the sender's
+-- GUID are secret values: they may be joined, formatted and passed to the
+-- functions used here, but not compared, measured or searched. Keeping to
+-- that makes the result the same everywhere.
 local function shortLine(chatFrame, entry)
 	local extra = entry.extraData -- info id, access id, type id, event, event args
 	local event = extra and extra[4]
@@ -60,8 +63,11 @@ local function shortLine(chatFrame, entry)
 	local group = ChatFrameUtil.GetChatCategory(event:sub(10))
 
 	local name = Ambiguate(sender, group == "GUILD" and "guild" or "none")
-	local _, class = GetPlayerInfoByGUID(args[12])
-	local color = class and C_ClassColor.GetClassColor(class)
+	-- A channel's own announcements ("Swamp of Sorrows is under attack!") come
+	-- with no sender, and the lookup then raises an error instead of returning
+	-- nothing. That is the one sign of them that can be read everywhere.
+	local known, _, class = pcall(GetPlayerInfoByGUID, args[12])
+	local color = known and class and C_ClassColor.GetClassColor(class)
 	if color then
 		name = color:WrapTextInColorCode(name)
 	end
@@ -80,11 +86,20 @@ local function shortLine(chatFrame, entry)
 		text = "[" .. language .. "] " .. text
 	end
 
-	-- Blizzard's player link ends in a fourth field, the chat target, which
-	-- nothing reads.
-	local line = nameFormat:format(ChatFrameUtil.GetPFlag(args[6], args[7], args[8])
-		.. ("|Hplayer:%s:%s:%s|h%s|h"):format(sender, lineID, group, name)) .. text
+	-- A Battle.net friend's link also carries their account id. Blizzard ends
+	-- both kinds of link in one more field, the chat target, which nothing
+	-- reads.
+	local link
+	if group == "BN_WHISPER" then
+		link = ("|HBNplayer:%s:%s:%s:%s|h%s|h"):format(sender, args[13], lineID, group, name)
+	else
+		link = ("|Hplayer:%s:%s:%s|h%s|h"):format(sender, lineID, group, name)
+	end
+	local line = nameFormat:format(ChatFrameUtil.GetPFlag(args[6], args[7], args[8]) .. link) .. text
 	if group == "CHANNEL" then
+		if not known then
+			line = text -- an announcement: no name to lead with
+		end
 		line = ("|Hchannel:channel:%d|h[%d]|h "):format(args[8], args[8]) .. line
 	end
 	local timestamp = ChatFrameUtil.GetTimestampFormat()
@@ -100,7 +115,7 @@ end
 -- lines. Anything this addon stored in the history would mark Blizzard's own
 -- code as tampered with when it reads it back, and its drag-to-copy would
 -- then be refused the clipboard.
-local shortLines = setmetatable({}, { __mode = "k" }) -- entry -> short form
+local shortLines = setmetatable({}, { __mode = "k" }) -- entry -> text to show
 local hooked = {} -- lines already watched
 local function showShortLine(line)
 	local text = shortLines[line.messageInfo]
@@ -114,31 +129,67 @@ local function scrollOneMessage(chatFrame, delta)
 	chatFrame:ScrollByAmount(delta)
 end
 
--- A line an addon prints is stored marked as that addon's, and Blizzard's
--- drag-to-copy is refused the clipboard while one is on screen. Of Blizzard's
--- ways to store a line, only BackFillMessage leaves it unmarked (tested in
--- game), and it adds at the oldest end. So the whole history is put back
--- through it, newest line first.
+-- Whether a value stored with a line is hidden, or holds something hidden.
+local function isHidden(value)
+	if issecretvalue(value) then
+		return true
+	elseif type(value) == "table" then
+		if not canaccesstable(value) then
+			return true
+		end
+		for i = 1, value.n or #value do
+			if issecretvalue(value[i]) then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+-- A line an addon prints is stored marked as that addon's. On a left click
+-- Blizzard redraws, and from the first marked line it reads it counts as
+-- tampered with for the rest of the click: its drag-to-copy is refused the
+-- clipboard, and on a line whose text is hidden (boss fights, keystone runs,
+-- PvP matches) it fails outright. Of Blizzard's ways to store a line, only
+-- BackFillMessage leaves it unmarked (tested in game), and it adds at the
+-- oldest end. So the whole history is put back through it, newest line first.
+--
+-- BackFillMessage only does that while nothing passed to it is hidden; given
+-- one hidden value it stores the line marked as this addon's (Blizzard says so
+-- in ScriptErrorsFrame, and tested in game). So a hidden value is left out.
+-- For hidden text the line is stored empty and its text is kept here, to be
+-- shown the way a short form is. The other values that can be hidden are
+-- Blizzard's bookkeeping for moving a whisper to its own tab, removing an
+-- ignored player's lines and revealing a censored line; a line stored without
+-- them is passed over by all three.
 local function restoreUnmarked(chatFrame)
 	local buffer = chatFrame.historyBuffer
 	local offset = chatFrame:GetScrollOffset()
-	local entries = {}
+	local entries, kept, shown = {}, {}, {}
 	for i = 1, chatFrame:GetNumMessages() do
-		entries[i] = buffer:GetEntryAtIndex(i) -- 1 is the newest
+		local entry = buffer:GetEntryAtIndex(i) -- 1 is the newest
+		local extra = entry.extraData
+		local values = { n = extra and extra.n or 0 }
+		for j = 1, values.n do
+			if not isHidden(extra[j]) then
+				values[j] = extra[j]
+			end
+		end
+		entries[i], kept[i] = entry, values
+		shown[i] = shortLines[entry] or (issecretvalue(entry.message) and entry.message or nil)
 	end
 	chatFrame:Clear()
-	for _, entry in ipairs(entries) do
-		local extra = entry.extraData
-		if extra then
-			chatFrame:BackFillMessage(entry.message, entry.r, entry.g, entry.b, unpack(extra, 1, extra.n))
-		else
-			chatFrame:BackFillMessage(entry.message, entry.r, entry.g, entry.b)
-		end
-	end
-	-- The history now holds new entries in the same order. Carry each short
-	-- form over to the entry that replaced its own.
 	for i, entry in ipairs(entries) do
-		shortLines[buffer:GetEntryAtIndex(i)] = shortLines[entry]
+		local message = entry.message
+		if issecretvalue(message) then
+			message = ""
+		end
+		chatFrame:BackFillMessage(message, entry.r, entry.g, entry.b, unpack(kept[i], 1, kept[i].n))
+	end
+	-- The history now holds new entries in the same order. Carry each line's
+	-- text over to the entry that replaced its own.
+	for i in ipairs(entries) do
+		shortLines[buffer:GetEntryAtIndex(i)] = shown[i]
 	end
 	chatFrame:SetScrollOffset(offset)
 end
@@ -206,6 +257,11 @@ local function setup(chatFrame)
 	chatFrame.editBox:SetPoint("TOPLEFT", chatFrame, "BOTTOMLEFT", -15, -2)
 	chatFrame.editBox:SetPoint("RIGHT", chatFrame, "RIGHT", 13, 0)
 
+	-- Blizzard leaves the arrow keys to the game while typing unless Alt is
+	-- held. Give them to the typed line: left and right move the cursor, up
+	-- and down recall lines sent earlier.
+	chatFrame.editBox:SetAltArrowKeyMode(false)
+
 	chatFrame:SetMaxLines(HISTORY_LINES)
 	if chatFrame:GetScript("OnMouseWheel") then -- absent if wheel scrolling is off
 		chatFrame:SetScript("OnMouseWheel", scrollOneMessage)
@@ -217,17 +273,21 @@ local function setup(chatFrame)
 	chatFrame:SetTextCopyable(true)
 	chatFrame:EnableMouse(true)
 
-	-- Blizzard's background fill overhangs the text by 2px on the left and by
-	-- 15 on the right, where the scrollbar was. Match the left.
+	-- Blizzard's background fill overhangs the text by 2px on the left, 15 on
+	-- the right, where the scrollbar was, 3 above and 6 below. Set both sides
+	-- to 8, and move the top up 3 and the bottom down 2, which leaves about
+	-- 8px clear around the letters on every side. The tabs hang from the
+	-- fill's top corners and move with it. The redraw below lowers the top.
 	local background = chatFrame.Background
-	for _, corner in ipairs(RIGHT_CORNERS) do
-		local point, relativeTo, relativePoint, _, y = background:GetPointByName(corner)
-		background:SetPoint(point, relativeTo, relativePoint, 2, y)
+	for _, corner in ipairs(CORNERS) do
+		local point, relativeTo, relativePoint, x, y = background:GetPointByName(corner)
+		background:SetPoint(point, relativeTo, relativePoint, x < 0 and -8 or 8, y + (y < 0 and -2 or 3))
 	end
+	local _, _, _, _, fillTop = background:GetPointByName("TOPLEFT")
 
 	-- Blizzard redraws after every new line, scroll, resize and font change.
 	local container = chatFrame.FontStringContainer
-	local trimmed
+	local spared, trimmed
 	chatFrame:AddOnDisplayRefreshedCallback(function()
 		-- Lines are created as the window needs them. Watch each new one, and
 		-- show its short form now, since this redraw has already filled it.
@@ -239,15 +299,31 @@ local function setup(chatFrame)
 			end
 		end
 
-		-- Messages stack upward from the bottom and are cut off at the
-		-- window's top edge, usually part-way through a row. Find the top of
-		-- the last message that fits whole. This is measured, because rows
-		-- are not all one height: an icon makes its row taller. In instances
-		-- a line's position can be a secret value; the walk stops there.
+		-- Rows stack upward from the bottom, and the window is rarely a whole
+		-- number of rows tall. The part of a row left over at the top can
+		-- hold no text. Leave it out of the window: end the background fill
+		-- below it, which brings the tabs down too, and let clicks there
+		-- reach the tabs. The half pixel absorbs rounding.
 		local top, fits = chatFrame:GetTop(), chatFrame:GetBottom()
 		if not top then
 			return
 		end
+		ruler:SetFontObject(chatFrame:GetFontObject())
+		local row = ruler:GetLineHeight()
+		local spare = math.max((top - fits + 0.5) % row - 0.5, 0)
+		if spare ~= spared then
+			spared = spare
+			background:SetPoint("TOPLEFT", chatFrame, "TOPLEFT", -8, fillTop - spare)
+			background:SetPoint("TOPRIGHT", chatFrame, "TOPRIGHT", 8, fillTop - spare)
+			chatFrame:SetHitRectInsets(0, 0, spare, 0)
+		end
+		top = top - spare
+
+		-- Rows are not all one height: an icon makes its row taller, and the
+		-- topmost message may then still be cut part-way through a row. Find
+		-- the top of the last message that fits whole, by measuring. Where a
+		-- line's text is hidden its position is a secret value too; the walk
+		-- stops there.
 		for _, line in ipairs(chatFrame.visibleLines) do
 			local lineTop = line:GetTop()
 			if not canaccessvalue(lineTop) or not lineTop or lineTop > top + 0.5 then
@@ -257,12 +333,9 @@ local function setup(chatFrame)
 		end
 
 		-- Above that, keep the whole rows of the next message and trim the
-		-- clip region to hide the rest. The half pixel absorbs rounding. The
-		-- eighth of a row hides the tails of the letters in the row cut away,
-		-- which hang that far below it.
-		ruler:SetFontObject(chatFrame:GetFontObject())
-		local row = ruler:GetLineHeight()
-		local trim = math.max((top - fits + 0.5) % row - 0.5, 0) + row / 8
+		-- clip region to hide the rest. The eighth of a row hides the tails of
+		-- the letters in the row cut away, which hang that far below it.
+		local trim = spare + math.max((top - fits + 0.5) % row - 0.5, 0) + row / 8
 		if trim ~= trimmed then
 			trimmed = trim
 			container:ClearAllPoints()
@@ -309,9 +382,17 @@ hooksecurefunc("FCF_OpenTemporaryWindow", setupNewFrames)
 -- its centre is 16 up: 31 - 28 / 2 - 1.
 GeneralDockManager.scrollFrame.child:SetHeight(28)
 
+-- The tab row hangs from the main window's background fill. Hang it from the
+-- selected window's instead: each fill ends below its own spare part of a
+-- row, which differs with the window's font size.
+hooksecurefunc("FCFDock_SelectWindow", function(dock, chatFrame)
+	dock:SetPoint("BOTTOMLEFT", chatFrame.Background, "TOPLEFT")
+	dock:SetPoint("BOTTOMRIGHT", chatFrame.Background, "TOPRIGHT")
+end)
+
 -- Edit Mode pads the main chat frame's selection box for the button column
 -- and scrollbar, and clamps the frame to the screen by it. With those gone,
--- pull the sides in close to the text. The 60 and -32 are Blizzard's own
--- margins for the tabs and edit box; SetPoint replaces the whole anchor.
-ChatFrame1.Selection:SetPoint("TOPLEFT", -5, 60)
-ChatFrame1.Selection:SetPoint("BOTTOMRIGHT", 5, -32)
+-- pull the sides in to the background fill's. The 60 and -32 are Blizzard's
+-- own margins for the tabs and edit box; SetPoint replaces the whole anchor.
+ChatFrame1.Selection:SetPoint("TOPLEFT", -8, 60)
+ChatFrame1.Selection:SetPoint("BOTTOMRIGHT", 8, -32)
