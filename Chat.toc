@@ -1,5 +1,5 @@
 ## Interface: 16001
-## Title: Chat
+## Title: Harmenszoon's Chat
 ## Author: Harmenszoon
 ## Notes: Compact chat formatting, longer history, and drag-to-select copying.
 ## Version: 0.1.2
